@@ -3,10 +3,8 @@
 Manual scraper for Indeed.de that helps with Cloudflare protection.
 """
 import time
-import json
 import pickle
 import logging
-import os
 from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -16,7 +14,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
-from utils import build_indeed_url, get_config, save_to_csv, save_to_json
 
 # Configure logging
 logging.basicConfig(
@@ -471,10 +468,101 @@ class ManualIndeedScraper:
             if 'date_posted' not in job:
                 job['date_posted'] = "Not specified"
             
+            # Get full job description by clicking on the job card and extracting the description
+            try:
+                job['full_description'] = self._get_full_job_description(card)
+            except Exception as e:
+                logger.warning(f"Error extracting full job description: {str(e)}")
+                job['full_description'] = "Not available"
+            
             return job
         except Exception as e:
             logger.warning(f"Error extracting job data from card: {str(e)}")
             return None
+    
+    def _get_full_job_description(self, card):
+        """
+        Get the full job description by clicking on the job card and extracting the description.
+        
+        Args:
+            card (WebElement): Job card element
+            
+        Returns:
+            str: Full job description
+        """
+        try:
+            # Store the current window handle
+            main_window = self.driver.current_window_handle
+            
+            # Find and click the job title link
+            link_selectors = [
+                "h2.jobTitle a",
+                "a.jcs-JobTitle",
+                ".jobTitle a"
+            ]
+            
+            link_elem = None
+            for selector in link_selectors:
+                try:
+                    link_elem = card.find_element(By.CSS_SELECTOR, selector)
+                    break
+                except NoSuchElementException:
+                    continue
+            
+            if not link_elem:
+                return "Could not find job link"
+            
+            # Click the job title to open the job details
+            link_elem.click()
+            
+            # Wait for the job description to load
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "div.jobsearch-JobComponent-description"))
+            )
+            
+            # Try different selectors for the full job description
+            description_selectors = [
+                "div.jobsearch-embeddedBody",
+                "div.jobsearch-JobComponent-description",
+                "#jobDescriptionText"
+            ]
+            
+            description_text = "Description not found"
+            for selector in description_selectors:
+                try:
+                    # Wait for the element to be visible
+                    WebDriverWait(self.driver, 5).until(
+                        EC.visibility_of_element_located((By.CSS_SELECTOR, selector))
+                    )
+                    description_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                    description_text = description_elem.text.strip()
+                    if description_text:
+                        break
+                except (NoSuchElementException, TimeoutException):
+                    continue
+            
+            # Return to the search results
+            if len(self.driver.window_handles) > 1:
+                # If a new tab was opened, close it and switch back to the main window
+                for window_handle in self.driver.window_handles:
+                    if window_handle != main_window:
+                        self.driver.switch_to.window(window_handle)
+                        self.driver.close()
+                self.driver.switch_to.window(main_window)
+            
+            return description_text
+        except Exception as e:
+            logger.warning(f"Error getting full job description: {str(e)}")
+            
+            # Make sure we're back on the main window
+            try:
+                if len(self.driver.window_handles) > 1:
+                    main_window = self.driver.window_handles[0]
+                    self.driver.switch_to.window(main_window)
+            except:
+                pass
+                
+            return "Error retrieving full description"
     
     def has_next_page(self):
         """
